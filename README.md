@@ -114,9 +114,15 @@ set Product_Category_2 = if(@variable1 = '', null, @variable1),
     Product_Category_3 = if(@variable2 = '', null, @variable2);
 ```
 
+**How this works:**
+- `CREATE TABLE` defines the structure the CSV will be loaded into — column names, data types, and which columns (`Product_Category_2`/`3`) are allowed to hold `NULL`, since not every transaction has a secondary or tertiary product category.
+- `LOAD DATA INFILE` reads the CSV directly into MySQL, which is far faster than inserting row-by-row. `FIELDS TERMINATED BY ','` tells MySQL the file is comma-separated, and `IGNORE 1 ROWS` skips the header row.
+- The column list in parentheses maps each CSV field to a table column **in file order**. Critically, the 10th and 11th CSV columns aren't loaded straight into `Product_Category_2`/`3` — they're captured into temporary variables `@variable1` and `@variable2` instead.
+- That's because the raw CSV stores missing category values as **empty strings (`''`)**, not true `NULL`s. The `SET` clause checks each variable: if it's an empty string, the column is set to `NULL`; otherwise the actual value is kept. Without this step, `AVG()`/`COUNT()` later would treat `''` as a real value instead of "missing," silently skewing category-level results.
+
 ### 2. Data Integrity Check
 
-Before any analysis, a `ROW_NUMBER()` window function partitioned across **every column** identifies exact duplicate rows:
+Before any analysis, the table is checked for exact duplicate transactions — rows where every single column matches another row. If duplicates exist and go unnoticed, every `SUM()` and `AVG()` run later would be inflated, so this check has to happen first.
 
 ```sql
 with cte1 as (
@@ -130,7 +136,13 @@ with cte1 as (
 select * from cte1 where row_num > 1;
 ```
 
-> ✅ **Result: 0 rows returned.** The dataset is confirmed free of duplicate transactions, so all downstream totals are reliable.
+**How this works:**
+- `ROW_NUMBER() OVER (PARTITION BY ...)` groups rows that are identical across **every** column (the full column list in `PARTITION BY`) and numbers them `1, 2, 3...` within each group.
+- A truly unique row will always be numbered `1`, since there's nothing else in its group.
+- Any row numbered `2` or higher means MySQL found another row elsewhere in the table with the exact same values in all 12 columns — i.e., a duplicate of an earlier row.
+- The CTE (`cte1`) calculates this numbering for the whole table without modifying it, and the final `SELECT ... WHERE row_num > 1` filters down to just the duplicates, if any exist.
+
+> ✅ **Result: 0 rows returned.** No row number exceeded 1, meaning no two transactions in the dataset are fully identical. The dataset is confirmed free of duplicates, so all downstream totals are reliable.
 
 ### 3. Standardization Layer
 
@@ -145,6 +157,12 @@ select User_ID, Product_ID,
   Product_Category_1, Product_Category_2, Product_Category_3, Purchase
 from black_friday_sales;
 ```
+
+**How this works:**
+- `CREATE VIEW` saves this `SELECT` statement as a virtual table named `blackfriday_sales`. It doesn't duplicate any data — every time the view is queried, MySQL runs the underlying logic fresh against the live `black_friday_sales` table.
+- The raw table stores `Gender` as `'f'`/`'m'` and `Marital_Status` as `0`/`1`, which are efficient to store but not human-readable. Two `CASE WHEN` expressions translate these codes into `'Female'`/`'Male'` and `'Single'`/`'Married'` at query time.
+- All other columns pass through unchanged.
+- The benefit: every EDA query and the Excel dashboard can simply `SELECT FROM blackfriday_sales` and get readable labels automatically, instead of repeating the same `CASE` logic — and translating, decoding — in 25+ separate queries.
 
 ### 4. Exploratory Data Analysis
 
@@ -170,6 +188,12 @@ group by age
 order by average_purchase desc;
 ```
 
+**How this works:**
+- `GROUP BY age` collapses all 550,068 individual transactions down to one row per age bracket.
+- `AVG(purchase)` then calculates the mean transaction value **within each group** — i.e., for every age bracket, "if you bought something, how much did you typically spend per purchase?"
+- `ORDER BY average_purchase DESC` sorts brackets from highest to lowest average order value, surfacing which age group tends to make the priciest individual purchases.
+- The same structure (`GROUP BY <dimension>` + an aggregate function) is reused with `SUM()` to get **total revenue per group**, and `COUNT()` to get **number of transactions per group**. Running all three against the same dimension separates *how much total revenue a group brings in* from *how big their average purchase is* from *how often they buy* — three different stories that a single query can't tell on its own.
+
 > The complete set of 25+ queries (sum/avg/count across every dimension) is in [`black_friday_analysis.sql`](./black_friday_analysis.sql).
 
 ### 5. Export
@@ -185,6 +209,11 @@ INTO OUTFILE 'clean_black_friday.csv'
 FIELDS TERMINATED BY ','
 LINES TERMINATED BY '\n';
 ```
+
+**How this works:**
+- This query selects every column from the `blackfriday_sales` view — meaning it pulls the **already-decoded, already-cleaned** version of the data (readable `Gender`/`Marital_Status` labels, proper `NULL`s), not the raw staging table.
+- `INTO OUTFILE` writes the result set directly to a `.csv` file on the MySQL server's filesystem, rather than just returning it to the query console.
+- `FIELDS TERMINATED BY ','` and `LINES TERMINATED BY '\n'` define the output format, so the resulting file is a standard comma-separated CSV that Excel can open and build pivot tables from directly — this is the file the dashboard's pivot tables are ultimately built on.
 
 ---
 
@@ -232,7 +261,7 @@ An interactive Excel dashboard built on the cleaned dataset, allowing non-techni
 
 1. Download the [Black Friday dataset](https://www.kaggle.com/datasets/sdolezel/black-friday) (or your own copy of the source CSV).
 2. Run [`black_friday_analysis.sql`](./black_friday_analysis.sql) against a MySQL 8.0+ instance (update the `LOAD DATA INFILE` path to your local file location; `secure_file_priv` and `local_infile` may need to be configured).
-3. Open `Peter_s_black_friday_full_project.xlsx` and refresh the pivot tables against the exported `clean_black_friday.csv`, or point them at your own query results.
+3. Open [`Peter_s_black_friday_full_project.xlsx`](./Peter_s_black_friday_full_project.xlsx) and refresh the pivot tables against the exported `clean_black_friday.csv`, or point them at your own query results.
 
 ---
 
