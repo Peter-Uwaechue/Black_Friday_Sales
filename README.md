@@ -267,5 +267,5 @@ An interactive Excel dashboard built on the cleaned dataset, allowing non-techni
 
 ## 👤 Author
 
-**Peter** — Data Analyst
+**Peter Uwaechue** — Data Analyst
 *Tools: SQL (MySQL) · Excel · Data Cleaning · Exploratory Data Analysis · Dashboarding*
