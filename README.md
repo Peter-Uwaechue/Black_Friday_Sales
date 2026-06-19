@@ -240,5 +240,3 @@ An interactive Excel dashboard built on the cleaned dataset, allowing non-techni
 
 **Peter** — Data Analyst
 *Tools: SQL (MySQL) · Excel · Data Cleaning · Exploratory Data Analysis · Dashboarding*
-#   B l a c k _ F r i d a y _ S a l e s  
- 
